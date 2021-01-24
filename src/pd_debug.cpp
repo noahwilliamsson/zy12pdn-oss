@@ -43,6 +43,96 @@ static volatile int tx_size;
 
 static char format_buf[80];
 
+static void uart_transmit(const uint8_t* data, size_t len);
+/* UART input handling */
+static uint8_t uart_ring_buffer[64];
+static volatile uint8_t uart_write_idx;
+static volatile uint8_t uart_read_idx;
+
+/* Override the ISR provided by libopencm3 */
+extern "C" void usart1_isr(void)
+{
+    /* loop while status register indicates non-empty received buffer */
+    while (usart_get_flag(USART1, USART_ISR_RXNE)) {
+        uart_ring_buffer[uart_write_idx] = usart_recv(USART1);
+        uart_write_idx = (uart_write_idx + 1) % sizeof(uart_ring_buffer);
+        uart_ring_buffer[uart_write_idx] = '\0';
+    }
+}
+
+static uint8_t uart_available(void)
+{
+    if (uart_read_idx <= uart_write_idx)
+        return uart_write_idx - uart_read_idx;
+
+    return sizeof(uart_ring_buffer) + uart_write_idx - uart_read_idx;
+}
+
+static uint8_t uart_read(uint8_t *buf, uint8_t len)
+{
+    uint8_t n_read;
+    for (n_read = 0; n_read < len && uart_read_idx != uart_write_idx; n_read++) {
+        *buf++ = uart_ring_buffer[uart_read_idx];
+        uart_read_idx = (uart_read_idx + 1) % sizeof(uart_ring_buffer);
+    }
+
+    return n_read;
+}
+
+void debug_uart_loop(void)
+{
+    static uint8_t data[64], dlen;
+    uint8_t len;
+    int i;
+
+    len = uart_available();
+    if (len == 0)
+        return;
+
+    len = uart_read(&data[dlen], len);
+    dlen += len;
+    if (dlen < sizeof(data))
+        data[dlen] = 0;
+
+restart:
+    uart_transmit((const uint8_t *)"\r", 1);
+    for(i = 0; i < dlen; i++) {
+        if (data[i] == 0x08 || data[i] == 0x7f) {
+            if (i == 0) {
+                memmove(data, &data[i+1], dlen - i - 1);
+                i -= 1;
+                dlen -= 1;
+            }
+            else {
+                /* Reprint line without previous char */
+                data[i-1] = ' ';
+                uart_transmit((const uint8_t *)"\r", 1);
+                uart_transmit((const uint8_t *)data, i);
+                memmove(&data[i-1], &data[i+1], dlen - i - 1);
+                i -= 2;
+                dlen -= 2;
+            }
+            goto restart;
+        }
+
+        if (data[i] != '\r' && data[i] != '\n') {
+            uart_transmit((const uint8_t *)&data[i], 1);
+            continue;
+        }
+        uart_transmit((const uint8_t *)"\r\n", 2);
+
+        data[i] = 0;
+        dlen -= i + 1;
+
+        /* process data[0:i] */
+        // TODO
+
+        /* move remaining data */
+        memmove(data, &data[i+1], dlen);
+        break;
+    }
+}
+
 static void uart_set_baudrate(int baudrate)
 {
     usart_disable(USART1);
@@ -67,7 +157,12 @@ static void uart_init(int baudrate)
 
     // Configure TX pin
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO2);
-    gpio_set_af(GPIOA, 1, GPIO2);
+    gpio_set_af(GPIOA, GPIO_AF1, GPIO2);
+
+    // Configure RX pin
+    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO3);
+    gpio_set_af(GPIOA, GPIO_AF1, GPIO3);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, GPIO3);
 
     // configure TX DMA (DMA 1 channel 2)
     rcc_periph_clock_enable(RCC_DMA1);
@@ -88,8 +183,14 @@ static void uart_init(int baudrate)
 
     dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL2);
 
-    usart_set_mode(USART1, USART_MODE_TX);
+    usart_set_mode(USART1, USART_MODE_TX_RX);
     uart_set_baudrate(baudrate);
+
+    // Enable interrupts for USART1
+    nvic_enable_irq(NVIC_USART1_IRQ);
+    // Enable RX interrupt for USART1
+    usart_enable_rx_interrupt(USART1);
+
     usart_enable(USART1);
 }
 
