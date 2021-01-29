@@ -52,6 +52,8 @@ void fusb302::init()
     write_register(reg::maska, *reg_maska::m_all);
     // Mask all interrupts (incl. good CRC sent)
     write_register(reg::maskb, *reg_maskb::m_all);
+    // Flush RX FIFO, enable SOP_DEBUG' and SOP_DEBUG'' packets
+    write_register(reg::control1, *(reg_control1::rx_flush | reg_control1::ensop1db | reg_control1::ensop2db));
 
     next_message_id = 0;
     is_timeout_active = false;

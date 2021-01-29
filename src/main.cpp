@@ -22,7 +22,7 @@ constexpr uint16_t nvs_voltage_key = 0;
 
 mcu_hal usb_pd::hal;
 
-static pd_sink power_sink;
+pd_sink power_sink;
 
 static eeprom nvs;
 

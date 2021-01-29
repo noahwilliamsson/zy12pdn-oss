@@ -162,6 +162,30 @@ void pd_sink::handle_vd_msg(uint16_t header, const uint8_t* payload) {
         }
         DEBUG_LOG("\r\n", 0);
     }
+
+    if (data[0] == 0xff008001) {
+        /* Handle discovery identity VDM */
+        DEBUG_LOG("RX:   discover identity\r\n", 0);
+
+        uint32_t vdm[] = {
+            data[0] | 0x40 /*ACK*/,
+
+            (1L<<30) | // USB Device
+            (0L<<27) | // UFP Product Type = Undefined
+            (0L<<26) | // No modal operation
+            (0L<<23) | // DFP Product Type = Undefined
+            0x5acL, // USB VID = Apple
+
+            0L, // XID
+
+            (0x0001L<<16) | // USB PID,
+            0x100L // bcdDevice
+        };
+
+        // Send reply
+        uint16_t h = pd_header::create_data(pd_msg_type::data_vendor_defined, 4);
+        pd_controller.send_message(h, (uint8_t *)vdm);
+    }
 }
 
 bool pd_sink::update_protocol()
@@ -218,6 +242,30 @@ void pd_sink::request_power(int voltage, int max_current)
     requested_voltage = voltage;
     requested_max_current = max_current;
 }
+
+#ifdef PD_VDM_APPLE
+void pd_sink::send_apple_vdm(sop_type sop, uint32_t cmd, uint16_t action, uint16_t action_flags, uint16_t arg)
+{
+    uint16_t header;
+    uint32_t vdm[3];
+
+    header = pd_header::create_data(pd_msg_type::data_vendor_defined, arg? 3: action? 2: 1);
+    vdm[0] = 0x05ac8000 | cmd;
+    vdm[1] = action | (action_flags << 16);
+    vdm[2] = arg << 16;
+
+    DEBUG_LOG("TX: Apple VDM 0x%08x\r\n", vdm[0]);
+    if (action)
+        DEBUG_LOG("TX:   action: 0x%04x", action);
+    if (action_flags)
+        DEBUG_LOG(", flags: 0x%04x", action_flags);
+    if (arg)
+        DEBUG_LOG(", arg: 0x%08x\r\n", arg);
+    DEBUG_LOG("\r\n", 0);
+
+    pd_controller.send_message(sop, header, (uint8_t *)vdm);
+}
+#endif
 
 void pd_sink::notify(callback_event event)
 {

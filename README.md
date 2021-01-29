@@ -1,3 +1,77 @@
+# Overview
+
+This is an attempt to take advantage of the FUSB302 chip on the YZStudio ZY12PDN USB-PD Trigger to explore USB-PD VDMs (Vendor Defined Message) on Apple devices.  See [Asahi Linux docs on USB-PD](https://github.com/AsahiLinux/docs/wiki/HW:USB-PD).
+
+- connect the SWD 3.3V pad to pin 1 (3.3V) on the Raspberry Pi
+- connect the SWD GND pad to pin 6 (GND) on the Raspberry Pi
+- program the STM32F0 via the SWD pads on the back of the ZY12PDN board
+- solder wires onto the STM32F0 chip's PA2 (USART1_TX) and PA3 (USART1_RX) pins (3.3V I/O) to gain access to the UART (the screw terminal must be desoldered first)
+- connect the PA2 (USART1_TX and PA3 (USART1_RX) wires to the Raspberry Pi's pin 10 (GPIO 15) and pin 8 (GPIO 14) respectively (see https://pinout.xyz)
+- use an USB Type-C breakout board to gain access to the D+/D- or SBU1/SBU2 signals since they're not accessible on the ZY12PDN
+
+Quickstart:
+
+    sudo apt install -y openocd python3 python3-serial
+    vi platformio.ini    # optionally update upload_protocol for your SWD programmer
+    pio run
+    pio run -t upload
+    miniterm --raw /dev/ttyS0 115200
+
+NOTE: [platformio.ini](platformio.ini) is currently setup for a J-Link EDU Mini SWD programmer.
+
+Sample output:
+
+    ZY12PDN OSS
+    Saved mode: 0
+    FUSB302B__X A_revB
+    USB PD comm
+    Event: protocol_changed
+    RX: data_source_capabilities
+    Event: source_caps_changed
+    RX: ctrl_accept
+    Event: power_accepted
+    RX: ctrl_ps_ready
+    Event: power_ready
+    Voltage: 5000
+    RX: data_source_capabilities
+    Event: source_caps_changed
+    RX: ctrl_accept
+    Event: power_accepted
+    RX: ctrl_ps_ready
+    Event: power_ready
+    Voltage: 5000
+    RX: data_vendor_defined, objs: 0x01
+    RX:   data: 0xff008001
+    RX:   discover identity
+
+    > help
+    Usage:
+      sop <sop|sop1|sop2|debug1|debug2> (send with given SOP)
+    Apple VDM commands:
+      aalist                 (send 0x10 Get Actions List)
+      aainfo <action>        (send 0x11 Get Action Info)
+      aaexec <action> [arg]  (send 0x12 Perform Action)
+      aareboot               (reboot via 0x12,0x105)
+
+    > aalist
+    TX: Apple VDM 0x05ac8010
+    RX: data_vendor_defined, objs: 0x04
+    RX:   data: 0x05ac8050
+    RX:   data: 0x01050303 [0x0105 0x0303]
+    RX:   data: 0x08030809 [0x0803 0x0809]
+    RX:   data: 0x01030000 [0x0103 0x0000]
+
+    > aainfo 105
+    TX: Apple VDM 0x05ac8011
+    TX:   action: 0x0105
+    RX: data_vendor_defined, objs: 0x02
+    RX:   data: 0x05ac8051
+    RX:   data: 0x80000000 [0x8000 0x0000]
+
+
+Below is the original README from https://github.com/manuelbl/zy12pdn-oss (on which this code is based).
+
+
 # Open-Source Firmware for ZY12PDN USB-PD
 
 Open-source firmware for USB Power Delivery trigger board based on an FUSB302B power delivery controller and a STM32F030F4 MCU.

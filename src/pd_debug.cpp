@@ -12,6 +12,9 @@
 
 #if defined(PD_DEBUG)
 
+#include "pd_sink.h"
+extern usb_pd::pd_sink power_sink;
+
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/stm32/dma.h>
 #include <libopencm3/stm32/gpio.h>
@@ -81,9 +84,10 @@ static uint8_t uart_read(uint8_t *buf, uint8_t len)
 
 void debug_uart_loop(void)
 {
-    static uint8_t data[64], dlen;
-    uint8_t len;
-    int i;
+    static sop_type sop = sop_type::SOP_TYPE_SOP_DEBUG1;
+    static uint8_t data[40], dlen;
+    uint8_t argc, i, j, len;
+    char *argv[6];
 
     len = uart_available();
     if (len == 0)
@@ -95,8 +99,8 @@ void debug_uart_loop(void)
         data[dlen] = 0;
 
 restart:
-    uart_transmit((const uint8_t *)"\r", 1);
-    for(i = 0; i < dlen; i++) {
+    uart_transmit((const uint8_t *)"\r> ", 3);
+    for (i = 0; i < dlen; i++) {
         if (data[i] == 0x08 || data[i] == 0x7f) {
             if (i == 0) {
                 memmove(data, &data[i+1], dlen - i - 1);
@@ -106,7 +110,7 @@ restart:
             else {
                 /* Reprint line without previous char */
                 data[i-1] = ' ';
-                uart_transmit((const uint8_t *)"\r", 1);
+                uart_transmit((const uint8_t *)"\r> ", 3);
                 uart_transmit((const uint8_t *)data, i);
                 memmove(&data[i-1], &data[i+1], dlen - i - 1);
                 i -= 2;
@@ -119,17 +123,59 @@ restart:
             uart_transmit((const uint8_t *)&data[i], 1);
             continue;
         }
+        data[i] = 0;
         uart_transmit((const uint8_t *)"\r\n", 2);
 
-        data[i] = 0;
-        dlen -= i + 1;
+        argc = 0;
+        argv[argc++] = (char *)data;
+        for (j = 0; j < i; j++) {
+            if (((char *)data)[j] == ' ') {
+                data[j] = 0;
+                if (j + 1 < i)
+                    argv[argc++] = (char *)&data[j+1];
+            }
+        }
 
         /* process data[0:i] */
-        // TODO
+        if(!strcmp(argv[0], "sop") && argc > 1) {
+            if (!strcmp(argv[1], "sop")) sop = sop_type::SOP_TYPE_SOP;
+            else if (!strcmp(argv[1], "sop1")) sop = sop_type::SOP_TYPE_SOP1;
+            else if (!strcmp(argv[1], "sop2")) sop = sop_type::SOP_TYPE_SOP2;
+            else if (!strcmp(argv[1], "debug1")) sop = sop_type::SOP_TYPE_SOP_DEBUG1;
+            else if (!strcmp(argv[1], "debug2")) sop = sop_type::SOP_TYPE_SOP_DEBUG2;
+        }
+        else if (!strcmp(argv[0], "help")) {
+            DEBUG_LOG("Usage:\r\n", 0);
+            DEBUG_LOG("  sop <sop|sop1|sop2|debug1|debug2> (send with given SOP)\r\n", 0);
+#ifdef PD_VDM_APPLE
+            DEBUG_LOG("Apple VDM commands:\r\n", 0);
+            DEBUG_LOG("  aalist                 (send 0x10 Get Actions List)\r\n", 0);
+            DEBUG_LOG("  aainfo <action>        (send 0x11 Get Action Info)\r\n", 0);
+            DEBUG_LOG("  aaexec <action> [arg]  (send 0x12 Perform Action)\r\n", 0);
+            DEBUG_LOG("  aareboot               (reboot via 0x12,0x105)\r\n", 0);
+        }
+        else if (!strcmp(argv[0], "aalist")) {
+            power_sink.send_apple_vdm(sop, 0x10, 0, 0, 0);
+        }
+        else if (!strcmp(argv[0], "aainfo") && argc > 1) {
+            uint16_t action = strtol(argv[1], NULL, 16) & 0xffff;
+            power_sink.send_apple_vdm(sop, 0x11, action, 0, 0);
+        }
+        else if (!strcmp(argv[0], "aaexec") && argc > 1) {
+            uint16_t action = strtol(argv[1], NULL, 16) & 0xffff;
+            uint16_t flags = (strtol(argv[1], NULL, 16) >> 16) & 0xffff;
+            uint16_t arg = argc > 2? strtol(argv[2], NULL, 16) & 0xfff: 0;
+            power_sink.send_apple_vdm(sop, 0x12, action, flags, arg);
+        }
+        else if (!strcmp(argv[0], "aareboot")) {
+            power_sink.send_apple_vdm(sop, 0x12, 0x105, 0, 0x8000);
+#endif
+        }
 
         /* move remaining data */
+        dlen -= i + 1;
         memmove(data, &data[i+1], dlen);
-        break;
+        goto restart;
     }
 }
 
