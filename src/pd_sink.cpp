@@ -61,19 +61,28 @@ void pd_sink::poll()
 void pd_sink::handle_msg(uint16_t header, const uint8_t* payload)
 {
     pd_msg_type type = pd_header::message_type(header);
+    int n = pd_header::num_data_objs(header);
+
     switch (type) {
     case pd_msg_type::data_source_capabilities:
+        DEBUG_LOG("RX: data_source_capabilities\r\n", 0);
         handle_src_cap_msg(header, payload);
         break;
+    case pd_msg_type::ctrl_get_sink_cap:
+        DEBUG_LOG("RX: ctrl_get_sink_cap\r\n", 0);
+        break;
     case pd_msg_type::ctrl_accept:
+        DEBUG_LOG("RX: ctrl_accept\r\n", 0);
         notify(callback_event::power_accepted);
         break;
     case pd_msg_type::ctrl_reject:
+        DEBUG_LOG("RX: ctrl_reject\r\n", 0);
         requested_voltage = 0;
         requested_max_current = 0;
         notify(callback_event::power_rejected);
         break;
     case pd_msg_type::ctrl_ps_ready:
+        DEBUG_LOG("RX: ctrl_ps_ready\r\n", 0);
         active_voltage = requested_voltage;
         active_max_current = requested_max_current;
         requested_voltage = 0;
@@ -81,6 +90,8 @@ void pd_sink::handle_msg(uint16_t header, const uint8_t* payload)
         notify(callback_event::power_ready);
         break;
     default:
+        DEBUG_LOG("RX: unknown msg, type: 0x%04x", (uint8_t)type);
+        DEBUG_LOG(", objs: 0x%02x\r\n", n);
         break;
     }
 }

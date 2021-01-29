@@ -106,16 +106,16 @@ void fusb302::check_for_interrupts()
     reg_interruptb interruptb = static_cast<reg_interruptb>(read_register(reg::interruptb));
 
     if (*(interrupta & reg_interrupta::i_hardrst) != 0) {
-        DEBUG_LOG("%lu: Hard reset\r\n", hal.millis());
+        DEBUG_LOG("IRQ: Hard reset at %lu\r\n", hal.millis());
         establish_usb_20();
         return;
     }
     if (*(interrupta & reg_interrupta::i_retryfail) != 0) {
-        DEBUG_LOG("Retry failed\r\n", 0);
+        DEBUG_LOG("IRQ: Retry failed\r\n", 0);
         needs_state_update = true;
     }
     if (*(interrupta & reg_interrupta::i_txsent) != 0) {
-        DEBUG_LOG("TX ack\r\n", 0);
+        DEBUG_LOG("IRQ: TX ack\r\n", 0);
         // turn off internal oscillator if TX FIFO is empty
         reg_status1 status1 = static_cast<reg_status1>(read_register(reg::status1));
         if (*(status1 & reg_status1::tx_empty) != 0)
@@ -133,11 +133,12 @@ void fusb302::check_for_interrupts()
         may_have_message = true;
     }
     if (*(interrupta & reg_interrupta::i_togdone) != 0) {
-        DEBUG_LOG("%lu: Toggle done\r\n", hal.millis());
+        DEBUG_LOG("IRQ: Toggle done at %lu\r\n", hal.millis());
         needs_state_update = true;
     }
     if (*(interrupt & reg_interrupt::i_bc_lvl) != 0) {
-        DEBUG_LOG("BC_LVL\r\n", 9);
+        reg_status0 status0 = static_cast<reg_status0>(read_register(reg::status0));
+        DEBUG_LOG("IRQ: BC_LVL: %d\r\n", *(status0 & reg_status0::bc_lvl_mask));
         needs_state_update = true;
     }
 
@@ -161,9 +162,9 @@ void fusb302::check_for_msg()
 
         reg_status0 status0 = static_cast<reg_status0>(read_register(reg::status0));
         if (*(status0 & reg_status0::crc_chk) == 0) {
-            DEBUG_LOG("Invalid CRC\r\n", 9);
+            DEBUG_LOG("RX: Invalid CRC\r\n", 0);
         } else if (pd_header::message_type(header) == pd_msg_type::ctrl_good_crc) {
-            DEBUG_LOG("Good CRC packet\r\n", 9);
+            DEBUG_LOG("RX: Good CRC packet\r\n", 0);
         } else {
             establish_usb_pd();
             events.add_item(event(sop, header, payload));
@@ -314,7 +315,7 @@ uint8_t fusb302::read_message(sop_type& sop, uint16_t& header, uint8_t* payload)
         break;
     default:
         // Flush RX FIFO
-        DEBUG_LOG("RX--> PD: flushing RX FIFO due to unknown SOP: %02x\n", buf[0] & 0xe0);
+        DEBUG_LOG("ERR: flushing RX FIFO, unexpected SOP: %02x\n", buf[0] & 0xe0);
         write_register(reg::control1, *reg_control1::rx_flush);
         return 0;
     }
@@ -396,6 +397,37 @@ void fusb302::send_message(sop_type sop, uint16_t header, const uint8_t* payload
     next_message_id++;
     if (next_message_id == 8)
         next_message_id = 0;
+
+#if 0
+    // XXX: this causes timeouts due to too long processing time
+    const char *sopstr = sop == sop_type::SOP_TYPE_SOP? "SOP":
+		sop == sop_type::SOP_TYPE_SOP1? "SOP'":
+		sop == sop_type::SOP_TYPE_SOP2? "SOP''":
+		sop == sop_type::SOP_TYPE_SOP_DEBUG1? "SOP_DEBUG'":
+		sop == sop_type::SOP_TYPE_SOP_DEBUG2? "SOP_DEBUG''":
+		"SOP_UKN";
+
+	pd_msg_type mt = pd_header::message_type(header);
+	const char *mtstr = mt == pd_msg_type::ctrl_accept? "ctrl_accept":
+		mt == pd_msg_type::ctrl_reject? "ctrl_reject":
+		mt == pd_msg_type::ctrl_reject? "ctrl_reject":
+		mt == pd_msg_type::ctrl_ps_ready? "ctrl_ps_ready":
+		mt == pd_msg_type::ctrl_get_source_cap? "ctrl_get_source_cap":
+		mt == pd_msg_type::ctrl_get_sink_cap? "ctrl_get_sink_cap":
+		mt == pd_msg_type::data_source_capabilities? "data_source_capabilities":
+		mt == pd_msg_type::data_vendor_defined? "data_vendor_defined":
+		"unknown";
+    DEBUG_LOG("TX: ", 0);
+	DEBUG_LOG(sopstr, 0);
+	DEBUG_LOG(" ", 0);
+	DEBUG_LOG(mtstr, 0);
+	DEBUG_LOG(" (hdr=0x%04x) ", header);
+    DEBUG_LOG(" PAYLOAD OUT:", 0);
+    for (size_t i = 0; i < payload_len; i++){
+        DEBUG_LOG("%02x", payload[i]);
+    }
+    DEBUG_LOG("\r\n", 0);
+#endif
 }
 
 uint8_t fusb302::read_register(reg reg_addr)

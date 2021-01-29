@@ -122,7 +122,6 @@ void sink_callback(callback_event event)
 
     switch (event) {
     case callback_event::source_caps_changed:
-        DEBUG_LOG("Caps changed\r\n", 0);
         on_source_caps_changed();
         break;
 
