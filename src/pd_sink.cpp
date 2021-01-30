@@ -68,6 +68,9 @@ void pd_sink::handle_msg(uint16_t header, const uint8_t* payload)
         DEBUG_LOG("RX: data_source_capabilities\r\n", 0);
         handle_src_cap_msg(header, payload);
         break;
+    case pd_msg_type::data_vendor_defined:
+        handle_vd_msg(header, payload);
+        break;
     case pd_msg_type::ctrl_get_sink_cap:
         DEBUG_LOG("RX: ctrl_get_sink_cap\r\n", 0);
         break;
@@ -145,6 +148,20 @@ void pd_sink::handle_src_cap_msg(uint16_t header, const uint8_t* payload)
     }
 
     notify(callback_event::source_caps_changed);
+}
+
+void pd_sink::handle_vd_msg(uint16_t header, const uint8_t* payload) {
+    uint32_t *data = (uint32_t *)payload;
+
+    DEBUG_LOG("RX: data_vendor_defined, objs: 0x%02x\r\n", pd_header::num_data_objs(header));
+    for (int i = 0; i < pd_header::num_data_objs(header); i++) {
+        DEBUG_LOG("RX:   data: 0x%08x", data[i]);
+        if (i > 0) {
+            DEBUG_LOG(" [0x%04x ", data[i] >> 16);
+            DEBUG_LOG("0x%04x]", data[i] & 0xffff);
+        }
+        DEBUG_LOG("\r\n", 0);
+    }
 }
 
 bool pd_sink::update_protocol()

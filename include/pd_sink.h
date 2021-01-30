@@ -113,6 +113,7 @@ struct pd_sink {
 
 private:
     void handle_msg(uint16_t header, const uint8_t* payload);
+    void handle_vd_msg(uint16_t header, const uint8_t* payload);
     void handle_src_cap_msg(uint16_t header, const uint8_t* payload);
     bool update_protocol();
     void notify(callback_event event);
