@@ -29,6 +29,15 @@ enum class fusb302_state : uint8_t {
     usb_pd
 };
 
+// Start of packet (SOP) variants: SOP, SOP' or SOP'' etc
+enum class sop_type : uint8_t {
+    SOP_TYPE_SOP,
+    SOP_TYPE_SOP1,
+    SOP_TYPE_SOP2,
+    SOP_TYPE_SOP_DEBUG1,
+    SOP_TYPE_SOP_DEBUG2,
+};
+
 /// Event kind
 enum class event_kind : uint8_t { none, state_changed, message_received };
 
@@ -36,6 +45,9 @@ enum class event_kind : uint8_t { none, state_changed, message_received };
 struct event {
     /// EVent kind
     event_kind kind;
+
+    /// SOP type
+    sop_type sop;
 
     /// Message header (valid if event_kind = `message_received`)
     uint16_t msg_header;
@@ -51,8 +63,9 @@ struct event {
         : kind(evt_kind)
     {
     }
-    event(uint16_t header, const uint8_t* payload = nullptr)
+    event(sop_type rx_sop, uint16_t header, const uint8_t* payload = nullptr)
         : kind(event_kind::message_received)
+        , sop(rx_sop)
         , msg_header(header)
         , msg_payload(payload)
     {
@@ -112,7 +125,10 @@ struct fusb302 {
      * Sends a message with the given header and payload.
      * The message ID is automatically inserted into the header.
      */
-    void send_message(uint16_t header, const uint8_t* payload);
+    void send_message(sop_type sop, uint16_t header, const uint8_t* payload);
+    void send_message(uint16_t header, const uint8_t* payload) {
+        send_message(sop_type::SOP_TYPE_SOP, header, payload);
+    }
 
     /**
      * Sends a message of type 'msg_type'.
@@ -144,7 +160,7 @@ private:
     void cancel_timeout();
 
     /// Retrieves the received message from the FIFO into the specified variables.
-    uint8_t read_message(uint16_t& header, uint8_t* payload);
+    uint8_t read_message(sop_type &sop, uint16_t& header, uint8_t* payload);
 
     /// Reads the value of the specified register.
     uint8_t read_register(reg reg_addr);

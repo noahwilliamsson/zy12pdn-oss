@@ -52,6 +52,8 @@ void fusb302::init()
     write_register(reg::maska, *reg_maska::m_all);
     // Mask all interrupts (incl. good CRC sent)
     write_register(reg::maskb, *reg_maskb::m_all);
+    // Flush RX FIFO, enable SOP_DEBUG' and SOP_DEBUG'' packets
+    write_register(reg::control1, *(reg_control1::rx_flush | reg_control1::ensop1db | reg_control1::ensop2db));
 
     next_message_id = 0;
     is_timeout_active = false;
@@ -106,16 +108,16 @@ void fusb302::check_for_interrupts()
     reg_interruptb interruptb = static_cast<reg_interruptb>(read_register(reg::interruptb));
 
     if (*(interrupta & reg_interrupta::i_hardrst) != 0) {
-        DEBUG_LOG("%lu: Hard reset\r\n", hal.millis());
+        DEBUG_LOG("IRQ: Hard reset at %lu\r\n", hal.millis());
         establish_usb_20();
         return;
     }
     if (*(interrupta & reg_interrupta::i_retryfail) != 0) {
-        DEBUG_LOG("Retry failed\r\n", 0);
+        DEBUG_LOG("IRQ: Retry failed\r\n", 0);
         needs_state_update = true;
     }
     if (*(interrupta & reg_interrupta::i_txsent) != 0) {
-        DEBUG_LOG("TX ack\r\n", 0);
+        DEBUG_LOG("IRQ: TX ack\r\n", 0);
         // turn off internal oscillator if TX FIFO is empty
         reg_status1 status1 = static_cast<reg_status1>(read_register(reg::status1));
         if (*(status1 & reg_status1::tx_empty) != 0)
@@ -133,11 +135,12 @@ void fusb302::check_for_interrupts()
         may_have_message = true;
     }
     if (*(interrupta & reg_interrupta::i_togdone) != 0) {
-        DEBUG_LOG("%lu: Toggle done\r\n", hal.millis());
+        DEBUG_LOG("IRQ: Toggle done at %lu\r\n", hal.millis());
         needs_state_update = true;
     }
     if (*(interrupt & reg_interrupt::i_bc_lvl) != 0) {
-        DEBUG_LOG("BC_LVL\r\n", 9);
+        reg_status0 status0 = static_cast<reg_status0>(read_register(reg::status0));
+        DEBUG_LOG("IRQ: BC_LVL: %d\r\n", *(status0 & reg_status0::bc_lvl_mask));
         needs_state_update = true;
     }
 
@@ -154,18 +157,19 @@ void fusb302::check_for_msg()
         if ((status1 & reg_status1::rx_empty) == reg_status1::rx_empty)
             break;
 
+        sop_type sop;
         uint16_t header;
         uint8_t* payload = message_buf[message_index];
-        read_message(header, payload);
+        read_message(sop, header, payload);
 
         reg_status0 status0 = static_cast<reg_status0>(read_register(reg::status0));
         if (*(status0 & reg_status0::crc_chk) == 0) {
-            DEBUG_LOG("Invalid CRC\r\n", 9);
+            DEBUG_LOG("RX: Invalid CRC\r\n", 0);
         } else if (pd_header::message_type(header) == pd_msg_type::ctrl_good_crc) {
-            DEBUG_LOG("Good CRC packet\r\n", 9);
+            DEBUG_LOG("RX: Good CRC packet\r\n", 0);
         } else {
             establish_usb_pd();
-            events.add_item(event(header, payload));
+            events.add_item(event(sop, header, payload));
             message_index++;
             if (message_index >= num_message_buf)
                 message_index = 0;
@@ -288,15 +292,32 @@ bool fusb302::has_event() { return events.num_items() != 0; }
 
 event fusb302::pop_event() { return events.pop_item(); }
 
-uint8_t fusb302::read_message(uint16_t& header, uint8_t* payload)
+uint8_t fusb302::read_message(sop_type& sop, uint16_t& header, uint8_t* payload)
 {
     // Read token and header
     uint8_t buf[3];
     hal.pd_ctrl_read(static_cast<uint8_t>(reg::fifos), 3, buf);
 
     // Check for SOP token
-    if ((buf[0] & 0xe0) != 0xe0) {
+    switch (buf[0] & 0xe0) {
+    case 0xe0:
+        sop = sop_type::SOP_TYPE_SOP;
+        break;
+    case 0xc0:
+        sop = sop_type::SOP_TYPE_SOP1;
+        break;
+    case 0xa0:
+        sop = sop_type::SOP_TYPE_SOP2;
+        break;
+    case 0x80:
+        sop = sop_type::SOP_TYPE_SOP_DEBUG1;
+        break;
+    case 0x60:
+        sop = sop_type::SOP_TYPE_SOP_DEBUG2;
+        break;
+    default:
         // Flush RX FIFO
+        DEBUG_LOG("ERR: flushing RX FIFO, unexpected SOP: %02x\n", buf[0] & 0xe0);
         write_register(reg::control1, *reg_control1::rx_flush);
         return 0;
     }
@@ -315,10 +336,10 @@ uint8_t fusb302::read_message(uint16_t& header, uint8_t* payload)
 void fusb302::send_header_message(pd_msg_type msg_type)
 {
     uint16_t header = pd_header::create_ctrl(msg_type);
-    send_message(header, nullptr);
+    send_message(sop_type::SOP_TYPE_SOP, header, nullptr);
 }
 
-void fusb302::send_message(uint16_t header, const uint8_t* payload)
+void fusb302::send_message(sop_type sop, uint16_t header, const uint8_t* payload)
 {
     // Enable internal oscillator
     write_register(reg::power, *reg_power::pwr_all);
@@ -329,10 +350,39 @@ void fusb302::send_message(uint16_t header, const uint8_t* payload)
     uint8_t buf[40];
 
     // Create token stream
-    buf[0] = *token::sop1;
-    buf[1] = *token::sop1;
-    buf[2] = *token::sop1;
-    buf[3] = *token::sop2;
+    switch (sop) {
+    case sop_type::SOP_TYPE_SOP:
+        buf[0] = *token::sop1;
+        buf[1] = *token::sop1;
+        buf[2] = *token::sop1;
+        buf[3] = *token::sop2;
+        break;
+    case sop_type::SOP_TYPE_SOP1:
+        buf[0] = *token::sop1;
+        buf[1] = *token::sop1;
+        buf[2] = *token::sop3;
+        buf[3] = *token::sop3;
+        break;
+    case sop_type::SOP_TYPE_SOP2:
+        buf[0] = *token::sop1;
+        buf[1] = *token::sop3;
+        buf[2] = *token::sop1;
+        buf[3] = *token::sop3;
+        break;
+    case sop_type::SOP_TYPE_SOP_DEBUG1:
+        buf[0] = *token::sop1;
+        buf[1] = *token::reset2;
+        buf[2] = *token::reset2;
+        buf[3] = *token::sop3;
+        break;
+    case sop_type::SOP_TYPE_SOP_DEBUG2:
+        buf[0] = *token::sop1;
+        buf[1] = *token::reset2;
+        buf[2] = *token::sop3;
+        buf[3] = *token::sop2;
+        break;
+    }
+
     buf[4] = *token::packsym | static_cast<uint8_t>(payload_len + 2);
     buf[5] = header & 0xff;
     buf[6] = header >> 8;
@@ -349,6 +399,37 @@ void fusb302::send_message(uint16_t header, const uint8_t* payload)
     next_message_id++;
     if (next_message_id == 8)
         next_message_id = 0;
+
+#if 0
+    // XXX: this causes timeouts due to too long processing time
+    const char *sopstr = sop == sop_type::SOP_TYPE_SOP? "SOP":
+		sop == sop_type::SOP_TYPE_SOP1? "SOP'":
+		sop == sop_type::SOP_TYPE_SOP2? "SOP''":
+		sop == sop_type::SOP_TYPE_SOP_DEBUG1? "SOP_DEBUG'":
+		sop == sop_type::SOP_TYPE_SOP_DEBUG2? "SOP_DEBUG''":
+		"SOP_UKN";
+
+	pd_msg_type mt = pd_header::message_type(header);
+	const char *mtstr = mt == pd_msg_type::ctrl_accept? "ctrl_accept":
+		mt == pd_msg_type::ctrl_reject? "ctrl_reject":
+		mt == pd_msg_type::ctrl_reject? "ctrl_reject":
+		mt == pd_msg_type::ctrl_ps_ready? "ctrl_ps_ready":
+		mt == pd_msg_type::ctrl_get_source_cap? "ctrl_get_source_cap":
+		mt == pd_msg_type::ctrl_get_sink_cap? "ctrl_get_sink_cap":
+		mt == pd_msg_type::data_source_capabilities? "data_source_capabilities":
+		mt == pd_msg_type::data_vendor_defined? "data_vendor_defined":
+		"unknown";
+    DEBUG_LOG("TX: ", 0);
+	DEBUG_LOG(sopstr, 0);
+	DEBUG_LOG(" ", 0);
+	DEBUG_LOG(mtstr, 0);
+	DEBUG_LOG(" (hdr=0x%04x) ", header);
+    DEBUG_LOG(" PAYLOAD OUT:", 0);
+    for (size_t i = 0; i < payload_len; i++){
+        DEBUG_LOG("%02x", payload[i]);
+    }
+    DEBUG_LOG("\r\n", 0);
+#endif
 }
 
 uint8_t fusb302::read_register(reg reg_addr)

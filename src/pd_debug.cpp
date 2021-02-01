@@ -12,6 +12,9 @@
 
 #if defined(PD_DEBUG)
 
+#include "pd_sink.h"
+extern usb_pd::pd_sink power_sink;
+
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/stm32/dma.h>
 #include <libopencm3/stm32/gpio.h>
@@ -43,6 +46,139 @@ static volatile int tx_size;
 
 static char format_buf[80];
 
+static void uart_transmit(const uint8_t* data, size_t len);
+/* UART input handling */
+static uint8_t uart_ring_buffer[64];
+static volatile uint8_t uart_write_idx;
+static volatile uint8_t uart_read_idx;
+
+/* Override the ISR provided by libopencm3 */
+extern "C" void usart1_isr(void)
+{
+    /* loop while status register indicates non-empty received buffer */
+    while (usart_get_flag(USART1, USART_ISR_RXNE)) {
+        uart_ring_buffer[uart_write_idx] = usart_recv(USART1);
+        uart_write_idx = (uart_write_idx + 1) % sizeof(uart_ring_buffer);
+        uart_ring_buffer[uart_write_idx] = '\0';
+    }
+}
+
+static uint8_t uart_available(void)
+{
+    if (uart_read_idx <= uart_write_idx)
+        return uart_write_idx - uart_read_idx;
+
+    return sizeof(uart_ring_buffer) + uart_write_idx - uart_read_idx;
+}
+
+static uint8_t uart_read(uint8_t *buf, uint8_t len)
+{
+    uint8_t n_read;
+    for (n_read = 0; n_read < len && uart_read_idx != uart_write_idx; n_read++) {
+        *buf++ = uart_ring_buffer[uart_read_idx];
+        uart_read_idx = (uart_read_idx + 1) % sizeof(uart_ring_buffer);
+    }
+
+    return n_read;
+}
+
+void debug_uart_loop(void)
+{
+    static sop_type sop = sop_type::SOP_TYPE_SOP_DEBUG1;
+    static uint8_t data[40], dlen;
+    uint8_t argc, i, j, len;
+    char *argv[6];
+
+    len = uart_available();
+    if (len == 0)
+        return;
+
+    len = uart_read(&data[dlen], len);
+    dlen += len;
+    if (dlen < sizeof(data))
+        data[dlen] = 0;
+
+restart:
+    uart_transmit((const uint8_t *)"\r> ", 3);
+    for (i = 0; i < dlen; i++) {
+        if (data[i] == 0x08 || data[i] == 0x7f) {
+            if (i == 0) {
+                memmove(data, &data[i+1], dlen - i - 1);
+                i -= 1;
+                dlen -= 1;
+            }
+            else {
+                /* Reprint line without previous char */
+                data[i-1] = ' ';
+                uart_transmit((const uint8_t *)"\r> ", 3);
+                uart_transmit((const uint8_t *)data, i);
+                memmove(&data[i-1], &data[i+1], dlen - i - 1);
+                i -= 2;
+                dlen -= 2;
+            }
+            goto restart;
+        }
+
+        if (data[i] != '\r' && data[i] != '\n') {
+            uart_transmit((const uint8_t *)&data[i], 1);
+            continue;
+        }
+        data[i] = 0;
+        uart_transmit((const uint8_t *)"\r\n", 2);
+
+        argc = 0;
+        argv[argc++] = (char *)data;
+        for (j = 0; j < i; j++) {
+            if (((char *)data)[j] == ' ') {
+                data[j] = 0;
+                if (j + 1 < i)
+                    argv[argc++] = (char *)&data[j+1];
+            }
+        }
+
+        /* process data[0:i] */
+        if(!strcmp(argv[0], "sop") && argc > 1) {
+            if (!strcmp(argv[1], "sop")) sop = sop_type::SOP_TYPE_SOP;
+            else if (!strcmp(argv[1], "sop1")) sop = sop_type::SOP_TYPE_SOP1;
+            else if (!strcmp(argv[1], "sop2")) sop = sop_type::SOP_TYPE_SOP2;
+            else if (!strcmp(argv[1], "debug1")) sop = sop_type::SOP_TYPE_SOP_DEBUG1;
+            else if (!strcmp(argv[1], "debug2")) sop = sop_type::SOP_TYPE_SOP_DEBUG2;
+        }
+        else if (!strcmp(argv[0], "help")) {
+            DEBUG_LOG("Usage:\r\n", 0);
+            DEBUG_LOG("  sop <sop|sop1|sop2|debug1|debug2> (send with given SOP)\r\n", 0);
+#ifdef PD_VDM_APPLE
+            DEBUG_LOG("Apple VDM commands:\r\n", 0);
+            DEBUG_LOG("  aalist                 (send 0x10 Get Actions List)\r\n", 0);
+            DEBUG_LOG("  aainfo <action>        (send 0x11 Get Action Info)\r\n", 0);
+            DEBUG_LOG("  aaexec <action> [arg]  (send 0x12 Perform Action)\r\n", 0);
+            DEBUG_LOG("  aareboot               (reboot via 0x12,0x105)\r\n", 0);
+        }
+        else if (!strcmp(argv[0], "aalist")) {
+            power_sink.send_apple_vdm(sop, 0x10, 0, 0, 0);
+        }
+        else if (!strcmp(argv[0], "aainfo") && argc > 1) {
+            uint16_t action = strtol(argv[1], NULL, 16) & 0xffff;
+            power_sink.send_apple_vdm(sop, 0x11, action, 0, 0);
+        }
+        else if (!strcmp(argv[0], "aaexec") && argc > 1) {
+            uint16_t action = strtol(argv[1], NULL, 16) & 0xffff;
+            uint16_t flags = (strtol(argv[1], NULL, 16) >> 16) & 0xffff;
+            uint16_t arg = argc > 2? strtol(argv[2], NULL, 16) & 0xfff: 0;
+            power_sink.send_apple_vdm(sop, 0x12, action, flags, arg);
+        }
+        else if (!strcmp(argv[0], "aareboot")) {
+            power_sink.send_apple_vdm(sop, 0x12, 0x105, 0, 0x8000);
+#endif
+        }
+
+        /* move remaining data */
+        dlen -= i + 1;
+        memmove(data, &data[i+1], dlen);
+        goto restart;
+    }
+}
+
 static void uart_set_baudrate(int baudrate)
 {
     usart_disable(USART1);
@@ -67,7 +203,12 @@ static void uart_init(int baudrate)
 
     // Configure TX pin
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO2);
-    gpio_set_af(GPIOA, 1, GPIO2);
+    gpio_set_af(GPIOA, GPIO_AF1, GPIO2);
+
+    // Configure RX pin
+    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO3);
+    gpio_set_af(GPIOA, GPIO_AF1, GPIO3);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, GPIO3);
 
     // configure TX DMA (DMA 1 channel 2)
     rcc_periph_clock_enable(RCC_DMA1);
@@ -88,8 +229,14 @@ static void uart_init(int baudrate)
 
     dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL2);
 
-    usart_set_mode(USART1, USART_MODE_TX);
+    usart_set_mode(USART1, USART_MODE_TX_RX);
     uart_set_baudrate(baudrate);
+
+    // Enable interrupts for USART1
+    nvic_enable_irq(NVIC_USART1_IRQ);
+    // Enable RX interrupt for USART1
+    usart_enable_rx_interrupt(USART1);
+
     usart_enable(USART1);
 }
 

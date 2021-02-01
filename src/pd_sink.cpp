@@ -61,19 +61,31 @@ void pd_sink::poll()
 void pd_sink::handle_msg(uint16_t header, const uint8_t* payload)
 {
     pd_msg_type type = pd_header::message_type(header);
+    int n = pd_header::num_data_objs(header);
+
     switch (type) {
     case pd_msg_type::data_source_capabilities:
+        DEBUG_LOG("RX: data_source_capabilities\r\n", 0);
         handle_src_cap_msg(header, payload);
         break;
+    case pd_msg_type::data_vendor_defined:
+        handle_vd_msg(header, payload);
+        break;
+    case pd_msg_type::ctrl_get_sink_cap:
+        DEBUG_LOG("RX: ctrl_get_sink_cap\r\n", 0);
+        break;
     case pd_msg_type::ctrl_accept:
+        DEBUG_LOG("RX: ctrl_accept\r\n", 0);
         notify(callback_event::power_accepted);
         break;
     case pd_msg_type::ctrl_reject:
+        DEBUG_LOG("RX: ctrl_reject\r\n", 0);
         requested_voltage = 0;
         requested_max_current = 0;
         notify(callback_event::power_rejected);
         break;
     case pd_msg_type::ctrl_ps_ready:
+        DEBUG_LOG("RX: ctrl_ps_ready\r\n", 0);
         active_voltage = requested_voltage;
         active_max_current = requested_max_current;
         requested_voltage = 0;
@@ -81,6 +93,8 @@ void pd_sink::handle_msg(uint16_t header, const uint8_t* payload)
         notify(callback_event::power_ready);
         break;
     default:
+        DEBUG_LOG("RX: unknown msg, type: 0x%04x", (uint8_t)type);
+        DEBUG_LOG(", objs: 0x%02x\r\n", n);
         break;
     }
 }
@@ -134,6 +148,44 @@ void pd_sink::handle_src_cap_msg(uint16_t header, const uint8_t* payload)
     }
 
     notify(callback_event::source_caps_changed);
+}
+
+void pd_sink::handle_vd_msg(uint16_t header, const uint8_t* payload) {
+    uint32_t *data = (uint32_t *)payload;
+
+    DEBUG_LOG("RX: data_vendor_defined, objs: 0x%02x\r\n", pd_header::num_data_objs(header));
+    for (int i = 0; i < pd_header::num_data_objs(header); i++) {
+        DEBUG_LOG("RX:   data: 0x%08x", data[i]);
+        if (i > 0) {
+            DEBUG_LOG(" [0x%04x ", data[i] >> 16);
+            DEBUG_LOG("0x%04x]", data[i] & 0xffff);
+        }
+        DEBUG_LOG("\r\n", 0);
+    }
+
+    if (data[0] == 0xff008001) {
+        /* Handle discovery identity VDM */
+        DEBUG_LOG("RX:   discover identity\r\n", 0);
+
+        uint32_t vdm[] = {
+            data[0] | 0x40 /*ACK*/,
+
+            (1L<<30) | // USB Device
+            (0L<<27) | // UFP Product Type = Undefined
+            (0L<<26) | // No modal operation
+            (0L<<23) | // DFP Product Type = Undefined
+            0x5acL, // USB VID = Apple
+
+            0L, // XID
+
+            (0x0001L<<16) | // USB PID,
+            0x100L // bcdDevice
+        };
+
+        // Send reply
+        uint16_t h = pd_header::create_data(pd_msg_type::data_vendor_defined, 4);
+        pd_controller.send_message(h, (uint8_t *)vdm);
+    }
 }
 
 bool pd_sink::update_protocol()
@@ -190,6 +242,30 @@ void pd_sink::request_power(int voltage, int max_current)
     requested_voltage = voltage;
     requested_max_current = max_current;
 }
+
+#ifdef PD_VDM_APPLE
+void pd_sink::send_apple_vdm(sop_type sop, uint32_t cmd, uint16_t action, uint16_t action_flags, uint16_t arg)
+{
+    uint16_t header;
+    uint32_t vdm[3];
+
+    header = pd_header::create_data(pd_msg_type::data_vendor_defined, arg? 3: action? 2: 1);
+    vdm[0] = 0x05ac8000 | cmd;
+    vdm[1] = action | (action_flags << 16);
+    vdm[2] = arg << 16;
+
+    DEBUG_LOG("TX: Apple VDM 0x%08x\r\n", vdm[0]);
+    if (action)
+        DEBUG_LOG("TX:   action: 0x%04x", action);
+    if (action_flags)
+        DEBUG_LOG(", flags: 0x%04x", action_flags);
+    if (arg)
+        DEBUG_LOG(", arg: 0x%08x\r\n", arg);
+    DEBUG_LOG("\r\n", 0);
+
+    pd_controller.send_message(sop, header, (uint8_t *)vdm);
+}
+#endif
 
 void pd_sink::notify(callback_event event)
 {

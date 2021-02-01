@@ -22,7 +22,7 @@ constexpr uint16_t nvs_voltage_key = 0;
 
 mcu_hal usb_pd::hal;
 
-static pd_sink power_sink;
+pd_sink power_sink;
 
 static eeprom nvs;
 
@@ -122,7 +122,6 @@ void sink_callback(callback_event event)
 
     switch (event) {
     case callback_event::source_caps_changed:
-        DEBUG_LOG("Caps changed\r\n", 0);
         on_source_caps_changed();
         break;
 

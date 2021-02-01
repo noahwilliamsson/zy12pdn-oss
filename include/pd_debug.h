@@ -19,10 +19,13 @@
 
 #define DEBUG_INIT() ::usb_pd::debug_init()
 
+#define DEBUG_UART_LOOP() ::usb_pd::debug_uart_loop()
+
 namespace usb_pd {
 
 void debug_log(const char* msg, uint32_t val);
 void debug_init();
+void debug_uart_loop(void);
 
 } // namespace usb_pd
 
@@ -33,6 +36,10 @@ void debug_init();
     } while (false)
 
 #define DEBUG_INIT()                                                                                                   \
+    do {                                                                                                               \
+    } while (false)
+
+#define DEBUG_UART_LOOP()                                                                                              \
     do {                                                                                                               \
     } while (false)
 

@@ -140,6 +140,9 @@ void mcu_hal::poll()
     // check for button release
     if (is_button_down)
         is_button_down = gpio_get(button_port, button_pin) == 0;
+
+    // handle UART input
+    DEBUG_UART_LOOP();
 }
 
 uint32_t mcu_hal::millis() { return millis_count; }

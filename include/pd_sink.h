@@ -87,6 +87,19 @@ struct pd_sink {
      */
     void request_power(int voltage, int max_current = 0);
 
+#ifdef PD_VDM_APPLE
+    /**
+     * Apple VDM: https://github.com/AsahiLinux/docs/wiki/HW:USB-PD
+     *
+     * @param sop SOP token (e.g. sop_type::SOP_TYPE_SOP_DEBUG1)
+     * @param cmd VDM command (e.g. 0x12 for perform action)
+     * @param action optional action ID for 0x12 (e.g 0x105 to reboot), ignored if zero
+     * @param action_flags optional flags packed together with the action, ignored if zero
+     * @param arg optional argument, needed by some actions
+     */
+    void send_apple_vdm(sop_type sop, uint32_t cmd, uint16_t action, uint16_t action_flags, uint16_t arg);
+#endif
+
     /// Active power delivery protocol
     pd_protocol protocol() { return protocol_; }
 
@@ -113,6 +126,7 @@ struct pd_sink {
 
 private:
     void handle_msg(uint16_t header, const uint8_t* payload);
+    void handle_vd_msg(uint16_t header, const uint8_t* payload);
     void handle_src_cap_msg(uint16_t header, const uint8_t* payload);
     bool update_protocol();
     void notify(callback_event event);
